@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 
 const api = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
@@ -14,6 +14,8 @@ export default function ModelTable() {
   const [loading, setLoading] = useState(false)
   const [name, setName] = useState('')
   const [task, setTask] = useState('generation')
+  const fileInputRef = useRef(null)
+  const [uploadingId, setUploadingId] = useState(null)
 
   const fetchModels = async () => {
     try {
@@ -59,6 +61,27 @@ export default function ModelTable() {
     await fetch(`${api}/api/models/${id}/simulate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario: 'smoke' }) })
   }
 
+  const handleFileSelect = async (id, file) => {
+    if (!file) return
+    try {
+      setUploadingId(id)
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch(`${api}/api/models/${id}/artifact`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!res.ok) throw new Error('Upload failed')
+      await fetchModels()
+    } catch (e) {
+      console.error(e)
+      alert('Upload failed: ' + e.message)
+    } finally {
+      setUploadingId(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
   return (
     <section className="mt-10">
       <div className="flex items-center justify-between">
@@ -83,6 +106,7 @@ export default function ModelTable() {
               <th className="px-4 py-3 font-medium">Name</th>
               <th className="px-4 py-3 font-medium">Task</th>
               <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">Artifact</th>
               <th className="px-4 py-3 font-medium">Actions</th>
             </tr>
           </thead>
@@ -96,6 +120,29 @@ export default function ModelTable() {
                     <span className={`h-1.5 w-1.5 rounded-full ${m.status === 'ready' ? 'bg-emerald-400' : m.status === 'training' ? 'bg-amber-400' : m.status === 'needs-training' ? 'bg-rose-400' : 'bg-sky-400'}`} />
                     {m.status}
                   </span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <label className="relative inline-flex items-center">
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        className="hidden"
+                        onChange={(e) => handleFileSelect(m.id, e.target.files?.[0])}
+                      />
+                      <span className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-white hover:bg-white/10 cursor-pointer">Upload</span>
+                    </label>
+                    {m.artifact_filename ? (
+                      <a
+                        href={`${api}/api/models/${m.id}/artifact/download`}
+                        className="rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs text-emerald-300 ring-1 ring-emerald-400/30 hover:bg-emerald-500/30"
+                      >
+                        {uploadingId === m.id ? 'Uploading...' : m.artifact_filename}
+                      </a>
+                    ) : (
+                      <span className="text-xs text-white/50">No artifact</span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
