@@ -14,14 +14,26 @@ export default function ModelTable() {
   const [loading, setLoading] = useState(false)
   const [name, setName] = useState('')
   const [task, setTask] = useState('generation')
-  const fileInputRef = useRef(null)
+  const fileInputRefs = useRef({})
   const [uploadingId, setUploadingId] = useState(null)
+  const [progress, setProgress] = useState({})
+  const [artifacts, setArtifacts] = useState({})
 
   const fetchModels = async () => {
     try {
       const res = await fetch(`${api}/api/models`)
       const data = await res.json()
       setModels(data)
+      // fetch artifacts per model
+      data.forEach(async (m) => {
+        try {
+          const r = await fetch(`${api}/api/models/${m.id}/artifacts`)
+          if (r.ok) {
+            const list = await r.json()
+            setArtifacts((prev) => ({ ...prev, [m.id]: list }))
+          }
+        } catch {}
+      })
     } catch (e) {
       console.error(e)
     }
@@ -61,25 +73,55 @@ export default function ModelTable() {
     await fetch(`${api}/api/models/${id}/simulate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario: 'smoke' }) })
   }
 
+  const uploadWithProgress = async (url, formData, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', url)
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText))
+        else reject(new Error(xhr.responseText || 'Upload failed'))
+      }
+      xhr.onerror = () => reject(new Error('Network error'))
+      xhr.send(formData)
+    })
+  }
+
   const handleFileSelect = async (id, file) => {
     if (!file) return
     try {
       setUploadingId(id)
+      setProgress((p) => ({ ...p, [id]: 0 }))
       const formData = new FormData()
       formData.append('file', file)
-      const res = await fetch(`${api}/api/models/${id}/artifact`, {
-        method: 'POST',
-        body: formData,
-      })
-      if (!res.ok) throw new Error('Upload failed')
+      // Detect SB3 .zip and set version label based on date or filename
+      const version = file.name.endsWith('.zip') ? `v${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 12)}` : undefined
+      if (version) formData.append('version', version)
+      formData.append('promote', 'true')
+      await uploadWithProgress(`${api}/api/models/${id}/artifact`, formData, (pct) => setProgress((p) => ({ ...p, [id]: pct })))
       await fetchModels()
     } catch (e) {
       console.error(e)
-      alert('Upload failed: ' + e.message)
+      alert('Upload failed: ' + (e.message || 'Unknown error'))
     } finally {
       setUploadingId(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+      setTimeout(() => setProgress((p) => ({ ...p, [id]: undefined })), 1200)
+      const input = fileInputRefs.current[id]
+      if (input) input.value = ''
     }
+  }
+
+  const promoteArtifact = async (modelId, artifactId) => {
+    await fetch(`${api}/api/models/${modelId}/artifacts/${artifactId}/promote`, { method: 'POST' })
+    fetchModels()
+  }
+
+  const deleteArtifact = async (modelId, artifactId) => {
+    if (!confirm('Delete this artifact?')) return
+    await fetch(`${api}/api/models/${modelId}/artifacts/${artifactId}`, { method: 'DELETE' })
+    fetchModels()
   }
 
   return (
@@ -106,13 +148,14 @@ export default function ModelTable() {
               <th className="px-4 py-3 font-medium">Name</th>
               <th className="px-4 py-3 font-medium">Task</th>
               <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium">Artifact</th>
+              <th className="px-4 py-3 font-medium">Active Artifact</th>
+              <th className="px-4 py-3 font-medium">Version</th>
               <th className="px-4 py-3 font-medium">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
             {models.map((m) => (
-              <tr key={m.id} className="text-white/90">
+              <tr key={m.id} className="text-white/90 align-top">
                 <td className="px-4 py-3">{m.name}</td>
                 <td className="px-4 py-3 text-white/70">{m.task}</td>
                 <td className="px-4 py-3">
@@ -125,13 +168,19 @@ export default function ModelTable() {
                   <div className="flex items-center gap-2">
                     <label className="relative inline-flex items-center">
                       <input
-                        ref={fileInputRef}
+                        ref={(el) => (fileInputRefs.current[m.id] = el)}
                         type="file"
+                        accept=".zip,.tar,.tar.gz,.tgz,.pt,.pth,.pkl,.bin,.safetensors"
                         className="hidden"
                         onChange={(e) => handleFileSelect(m.id, e.target.files?.[0])}
                       />
                       <span className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-white hover:bg-white/10 cursor-pointer">Upload</span>
                     </label>
+                    {typeof progress[m.id] === 'number' && (
+                      <div className="w-32 h-2 bg-white/10 rounded overflow-hidden">
+                        <div className="h-full bg-emerald-500" style={{ width: `${progress[m.id]}%` }} />
+                      </div>
+                    )}
                     {m.artifact_filename ? (
                       <a
                         href={`${api}/api/models/${m.id}/artifact/download`}
@@ -140,15 +189,34 @@ export default function ModelTable() {
                         {uploadingId === m.id ? 'Uploading...' : m.artifact_filename}
                       </a>
                     ) : (
-                      <span className="text-xs text-white/50">No artifact</span>
+                      <span className="text-xs text-white/50">No active artifact</span>
                     )}
                   </div>
                 </td>
+                <td className="px-4 py-3 text-white/70 text-xs">{m.active_version || '-'}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
                     <button onClick={() => markNeedsTraining(m.id)} className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-white hover:bg-white/10">Needs Training</button>
                     <button onClick={() => triggerTraining(m.id)} className="rounded-lg bg-amber-500/80 px-3 py-1.5 text-xs text-slate-900 hover:bg-amber-500">Train</button>
                     <button onClick={() => triggerSim(m.id)} className="rounded-lg bg-sky-500/80 px-3 py-1.5 text-xs text-slate-900 hover:bg-sky-500">Simulate</button>
+                  </div>
+                  {/* Artifact list */}
+                  <div className="mt-3 space-y-1">
+                    {(artifacts[m.id] || []).map((a) => (
+                      <div key={a.id} className="flex items-center justify-between rounded-lg bg-white/5 px-2 py-1.5 text-xs text-white/80">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-block h-2 w-2 rounded-full ${a.sb3_valid ? 'bg-emerald-400' : 'bg-white/30'}`} title={a.sb3_valid ? 'Looks like SB3 .zip' : 'Unknown format'} />
+                          <span className="font-medium">{a.version}</span>
+                          <span className="text-white/60">{a.filename}</span>
+                          <span className="text-white/40">{(a.size / (1024 * 1024)).toFixed(2)} MB</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <a href={`${api}/api/artifacts/${a.id}/download`} className="rounded bg-white/10 px-2 py-1 hover:bg-white/15">Download</a>
+                          <button onClick={() => promoteArtifact(m.id, a.id)} className="rounded bg-emerald-500/70 text-slate-900 px-2 py-1 hover:bg-emerald-500">Promote</button>
+                          <button onClick={() => deleteArtifact(m.id, a.id)} className="rounded bg-rose-500/70 text-slate-900 px-2 py-1 hover:bg-rose-500">Delete</button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </td>
               </tr>
